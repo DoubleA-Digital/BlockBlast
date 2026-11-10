@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Block Blast</title>
+<meta name="description" content="Drag blocks onto the 8×8 board, fill rows and columns to clear them, and chain combos for big scores.">
+<meta name="theme-color" content="#15123a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2315123a'/%3E%3Crect x='10' y='10' width='20' height='20' rx='5' fill='%23ff5a7a'/%3E%3Crect x='34' y='10' width='20' height='20' rx='5' fill='%23ffc23d'/%3E%3Crect x='10' y='34' width='20' height='20' rx='5' fill='%2340d8a0'/%3E%3Crect x='34' y='34' width='20' height='20' rx='5' fill='%234c9bff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{ --bg1:#2a1f6e; --bg2:#120f33; --ink:#fff; --dim:rgba(255,255,255,.62); --gold:#ffc23d; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--bg2); color:var(--ink);
+    font-family:"Fredoka", system-ui, sans-serif; user-select:none; -webkit-user-select:none; touch-action:none; }
+  body{ background: radial-gradient(120% 90% at 50% 0%, var(--bg1) 0%, #1b1550 45%, var(--bg2) 100%); }
+  #cv{ position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+  .top{ position:fixed; left:0; right:0; top:calc(14px + env(safe-area-inset-top)); display:flex; justify-content:center;
+    pointer-events:none; }
+  .scorebox{ text-align:center; }
+  .best{ display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:15px; color:var(--gold);
+    background:rgba(0,0,0,.22); padding:4px 12px; border-radius:999px; }
+  .score{ font-weight:700; font-size:clamp(44px, 8vh, 68px); line-height:1.05; letter-spacing:1px;
+    text-shadow:0 4px 18px rgba(0,0,0,.35); font-variant-numeric:tabular-nums; }
+  .icon{ position:fixed; top:calc(14px + env(safe-area-inset-top)); width:44px; height:44px; border-radius:14px; border:0;
+    background:rgba(255,255,255,.1); color:#fff; display:grid; place-items:center; cursor:pointer; }
+  .icon svg{ width:22px; height:22px; }
+  #bSound{ right:14px; }
+  #bMenu{ left:14px; }
+  .ov{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; padding:20px;
+    background:rgba(10,8,30,.6); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    opacity:0; pointer-events:none; transition:opacity .35s; z-index:10; }
+  .ov.on{ opacity:1; pointer-events:auto; }
+  .card{ width:min(360px, 100%); text-align:center; background:linear-gradient(180deg, #2f2680, #1e1858);
+    border:1px solid rgba(255,255,255,.12); border-radius:26px; padding:26px 22px 22px;
+    box-shadow:0 30px 80px rgba(0,0,0,.5); transform:translateY(16px) scale(.96); transition:transform .45s cubic-bezier(.2,1.3,.3,1); }
+  .ov.on .card{ transform:none; }
+  .card h2{ margin:0; font-size:30px; font-weight:700; }
+  .card .lbl{ font-size:13px; font-weight:600; color:var(--dim); letter-spacing:1.5px; text-transform:uppercase; margin-top:14px; }
+  .card .big{ font-size:56px; font-weight:700; line-height:1; margin-top:2px; }
+  .card .nb{ display:inline-block; margin-top:8px; background:var(--gold); color:#3a2700; font-weight:700;
+    padding:4px 12px; border-radius:999px; font-size:14px; }
+  .btn{ display:block; width:100%; margin-top:18px; border:0; border-radius:16px; padding:15px; cursor:pointer;
+    font:700 20px "Fredoka", sans-serif; color:#fff; background:linear-gradient(180deg, #ff6f8f, #ff4370);
+    box-shadow:0 6px 0 #b8264d, 0 12px 26px rgba(255,67,112,.35); transition:transform .1s; }
+  .btn:active{ transform:translateY(3px); box-shadow:0 3px 0 #b8264d; }
+  .btn.alt{ background:rgba(255,255,255,.1); box-shadow:none; font-size:16px; padding:12px; margin-top:10px; }
+  .how{ font-size:14px; line-height:1.5; color:var(--dim); margin:12px 0 0; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div class="top"><div class="scorebox">
+  <div class="best"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3h14v3a5 5 0 0 1-4 4.9V13h2v2H7v-2h2v-2.1A5 5 0 0 1 5 6V3zm-2 1h2v2a2 2 0 0 1-2-2zm16 0h2a2 2 0 0 1-2 2V4zM8 17h8v4H8z"/></svg><span id="best">0</span></div>
+  <div class="score" id="score">0</div>
+</div></div>
+
+<button class="icon" id="bMenu" aria-label="Restart"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
+<button class="icon" id="bSound" aria-label="Sound"><svg id="sndIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
+
+<div class="ov on" id="start"><div class="card">
+  <h2>Block Blast</h2>
+  <p class="how">Drag the three blocks onto the board. Fill a full row or column to blast it. Clear lines back to back for combos. It's over when nothing fits.</p>
+  <div class="lbl">Best</div><div class="big" id="startBest">0</div>
+  <button class="btn" id="bPlay">Play</button>
+</div></div>
+
+<div class="ov" id="over"><div class="card">
+  <h2 id="overTitle">No more moves</h2>
+  <div class="lbl">Score</div><div class="big" id="overScore">0</div>
+  <div id="overBest"></div>
+  <button class="btn" id="bAgain">Play again</button>
+</div></div>
+
+<script>
+"use strict";
+/* ============================================================
+   BLOCK BLAST — 8×8 board, three pieces at a time.
+   ============================================================ */
+const N = 8;
+const COLORS = [
+  ['#ff6b8b', '#e8325d'], ['#ffc94a', '#f29b12'], ['#47e0a8', '#14b37a'], ['#5aa8ff', '#2b6fe0'],
+  ['#b67cff', '#7d43e6'], ['#ff9354', '#ea5b1d'], ['#44d6ef', '#1597c6']
+];
+// shapes as [row, col] cells; weight = how often they appear
+const SHAPES = [
+  { c: [[0,0]], w: 4 },
+  { c: [[0,0],[0,1]], w: 6 }, { c: [[0,0],[1,0]], w: 6 },
+  { c: [[0,0],[0,1],[0,2]], w: 6 }, { c: [[0,0],[1,0],[2,0]], w: 6 },
+  { c: [[0,0],[0,1],[0,2],[0,3]], w: 4 }, { c: [[0,0],[1,0],[2,0],[3,0]], w: 4 },
+  { c: [[0,0],[0,1],[0,2],[0,3],[0,4]], w: 2 }, { c: [[0,0],[1,0],[2,0],[3,0],[4,0]], w: 2 },
+  { c: [[0,0],[0,1],[1,0],[1,1]], w: 7 },
+  { c: [[0,0],[0,1],[0,2],[1,0],[1,1],[1,2],[2,0],[2,1],[2,2]], w: 2 },
+  { c: [[0,0],[0,1],[0,2],[1,0],[1,1],[1,2]], w: 3 }, { c: [[0,0],[0,1],[1,0],[1,1],[2,0],[2,1]], w: 3 },
+  // small corners
+  { c: [[0,0],[1,0],[1,1]], w: 4 }, { c: [[0,1],[1,0],[1,1]], w: 4 }, { c: [[0,0],[0,1],[1,0]], w: 4 }, { c: [[0,0],[0,1],[1,1]], w: 4 },
+  // L shapes
+  { c: [[0,0],[1,0],[2,0],[2,1]], w: 3 }, { c: [[0,1],[1,1],[2,1],[2,0]], w: 3 },
+  { c: [[0,0],[0,1],[1,0],[2,0]], w: 3 }, { c: [[0,0],[0,1],[1,1],[2,1]], w: 3 },
+  { c: [[0,0],[0,1],[0,2],[1,0]], w: 3 }, { c: [[0,0],[0,1],[0,2],[1,2]], w: 3 },
+  { c: [[0,0],[1,0],[1,1],[1,2]], w: 3 }, { c: [[0,2],[1,0],[1,1],[1,2]], w: 3 },
+  // T and S/Z
+  { c: [[0,0],[0,1],[0,2],[1,1]], w: 3 }, { c: [[0,1],[1,0],[1,1],[1,2]], w: 3 },
+  { c: [[0,0],[1,0],[1,1],[2,0]], w: 3 }, { c: [[0,1],[1,0],[1,1],[2,1]], w: 3 },
+  { c: [[0,1],[0,2],[1,0],[1,1]], w: 2 }, { c: [[0,0],[0,1],[1,1],[1,2]], w: 2 },
+  { c: [[0,0],[1,0],[1,1],[2,1]], w: 2 }, { c: [[0,1],[1,0],[1,1],[2,0]], w: 2 },
+  // big corners
+  { c: [[0,0],[1,0],[2,0],[2,1],[2,2]], w: 2 }, { c: [[0,0],[0,1],[0,2],[1,0],[2,0]], w: 2 },
+  { c: [[0,0],[0,1],[0,2],[1,2],[2,2]], w: 2 }, { c: [[0,2],[1,2],[2,0],[2,1],[2,2]], w: 2 }
+].map(s => {
+  const rows = Math.max(...s.c.map(p => p[0])) + 1, cols = Math.max(...s.c.map(p => p[1])) + 1;
+  return { ...s, rows, cols };
+});
+const W_TOTAL = SHAPES.reduce((a, s) => a + s.w, 0);
+
+/* ---------- state ---------- */
+let board, tray, score, shownScore, best, combo, movesSinceClear, running, dragging, effects, particles, shake;
+try { best = +localStorage.getItem('bb_best') || 0; } catch (e) { best = 0; }
+let sound = true;
+try { sound = localStorage.getItem('bb_sound') !== '0'; } catch (e) {}
+
+/* ---------- canvas & layout ---------- */
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+let VW, VH, DPR, L = {};
+function layout(){
+  DPR = Math.min(2.5, window.devicePixelRatio || 1);
+  VW = innerWidth; VH = innerHeight;
+  cv.width = Math.round(VW * DPR); cv.height = Math.round(VH * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const top = 130, trayH = Math.min(190, VH * 0.24);
+  const size = Math.max(200, Math.min(VW - 28, VH - top - trayH - 30, 560));
+  L.cell = size / N;
+  L.size = size;
+  L.x = (VW - size) / 2;
+  L.y = top + Math.max(0, (VH - top - trayH - size - 30) * 0.35);
+  L.trayY = L.y + size + 22;
+  L.trayH = Math.min(trayH, VH - L.trayY - 10);
+  L.slotW = Math.min(VW, size + 60) / 3;
+  L.trayX = (VW - L.slotW * 3) / 2;
+  L.mini = Math.min(L.cell * 0.55, L.trayH / 5.6, L.slotW / 5.6);
+}
+addEventListener('resize', layout);
+layout();
+
+/* ---------- pieces ---------- */
+function randShape(){
+  let r = Math.random() * W_TOTAL;
+  for (const s of SHAPES){ if ((r -= s.w) <= 0) return s; }
+  return SHAPES[0];
+}
+const fits = (s, r, c, b = board) => s.c.every(([dr, dc]) => {
+  const rr = r + dr, cc = c + dc;
+  return rr >= 0 && cc >= 0 && rr < N && cc < N && !b[rr][cc];
+});
+const canPlaceAnywhere = (s, b = board) => {
+  for (let r = 0; r <= N - s.rows; r++) for (let c = 0; c <= N - s.cols; c++) if (fits(s, r, c, b)) return true;
+  return false;
+};
+function newTray(){
+  // try for a hand where at least one piece fits; keep it random otherwise
+  let hand;
+  for (let tries = 0; tries < 25; tries++){
+    hand = [randShape(), randShape(), randShape()];
+    if (hand.some(s => canPlaceAnywhere(s))) break;
+  }
+  tray = hand.map((s, i) => ({ shape: s, color: (Math.random() * COLORS.length) | 0, used: false,
+                                appear: -i * 0.08, x: null, y: null, scale: 0 }));
+}
+
+/* ---------- game flow ---------- */
+function start(){
+  board = Array.from({ length: N }, () => new Array(N).fill(null));
+  score = 0; shownScore = 0; combo = 0; movesSinceClear = 0; running = true; dragging = null;
+  effects = []; particles = []; shake = 0;
+  newTray();
+  hideOv('over'); hideOv('start');
+  updateScore();
+}
+function gameOver(){
+  running = false;
+  const isBest = score > best;
+  if (isBest){ best = score; try { localStorage.setItem('bb_best', best); } catch (e) {} }
+  // grey out the board row by row
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++)
+    if (board[r][c]) board[r][c].dieAt = performance.now() + (N - 1 - r) * 70 + c * 12;
+  sfx.over();
+  setTimeout(() => {
+    document.getElementById('overScore').textContent = score;
+    document.getElementById('overBest').innerHTML = isBest && score > 0
+      ? '<span class="nb">New best!</span>' : `<div class="lbl">Best</div><div class="big" style="font-size:30px">${best}</div>`;
+    document.getElementById('overTitle').textContent = isBest && score > 0 ? 'Amazing!' : 'No more moves';
+    showOv('over');
+  }, 1100);
+  updateScore();
+}
+function updateScore(){ document.getElementById('best').textContent = Math.max(best, score); }
+
+function place(piece, r, c){
+  const now = performance.now();
+  const s = piece.shape;
+  for (const [dr, dc] of s.c) board[r + dr][c + dc] = { color: piece.color, born: now + (dr + dc) * 18 };
+  piece.used = true;
+  let gained = s.c.length;
+  sfx.place();
+
+  // find full lines
+  const rows = [], cols = [];
+  for (let i = 0; i < N; i++){
+    if (board[i].every(Boolean)) rows.push(i);
+    if (board.every(row => row[i])) cols.push(i);
+  }
+  const lines = rows.length + cols.length;
+  if (lines){
+    combo = movesSinceClear <= 2 && combo > 0 ? combo + 1 : 1;
+    movesSinceClear = 0;
+    const cells = new Map();
+    rows.forEach(rr => { for (let cc = 0; cc < N; cc++) cells.set(rr * N + cc, [rr, cc]); });
+    cols.forEach(cc => { for (let rr = 0; rr < N; rr++) cells.set(rr * N + cc, [rr, cc]); });
+    let i = 0;
+    for (const [rr, cc] of cells.values()){
+      const cell = board[rr][cc];
+      // sweep outward from where the piece landed
+      const d = Math.abs(rr - (r + s.rows / 2)) + Math.abs(cc - (c + s.cols / 2));
+      effects.push({ type: 'clear', r: rr, c: cc, color: cell.color, t0: now + d * 22 });
+      board[rr][cc] = null;
+      i++;
+    }
+    const lineScore = 10 * lines * lines + (lines > 1 ? 20 * lines : 0);
+    gained += Math.round(lineScore * (1 + (combo - 1) * 0.5));
+    const allClear = board.every(row => row.every(x => !x));
+    if (allClear) gained += 300;
+    shake = Math.min(14, 4 + lines * 3 + combo);
+    const cx = L.x + (c + s.cols / 2) * L.cell, cy = L.y + (r + s.rows / 2) * L.cell;
+    const words = ['', 'Nice', 'Great!', 'Excellent!', 'Amazing!', 'Unbelievable!'];
+    effects.push({ type: 'text', x: cx, y: cy - L.cell * 0.4, text: '+' + gained, t0: now, size: 1 });
+    if (lines >= 2 || combo >= 2)
+      effects.push({ type: 'banner', text: combo >= 2 ? `Combo ×${combo}` : words[Math.min(5, lines)],
+                     sub: combo >= 2 ? words[Math.min(5, lines)] : '', t0: now, color: COLORS[piece.color][0] });
+    if (allClear) effects.push({ type: 'banner', text: 'All Clear!', sub: '+300', t0: now + 500, color: '#ffc94a' });
+    sfx.clear(lines, combo);
+    vibrate(lines > 1 ? [20, 30, 30] : 18);
+  } else {
+    movesSinceClear++;
+    if (movesSinceClear > 2) combo = 0;
+    effects.push({ type: 'text', x: L.x + (c + s.cols / 2) * L.cell, y: L.y + r * L.cell, text: '+' + gained, t0: now, size: 0.7 });
+  }
+  score += gained;
+  updateScore();
+
+  if (tray.every(p => p.used)){ newTray(); sfx.deal(); }
+  // over when no remaining piece fits
+  const left = tray.filter(p => !p.used);
+  if (!left.some(p => canPlaceAnywhere(p.shape))) setTimeout(gameOver, 450);
+}
+
+/* ---------- input ---------- */
+function trayRect(i){
+  return { x: L.trayX + L.slotW * i, y: L.trayY, w: L.slotW, h: L.trayH };
+}
+function pickAt(x, y){
+  if (!running) return -1;
+  for (let i = 0; i < 3; i++){
+    const p = tray[i]; if (p.used) continue;
+    const r = trayRect(i);
+    if (x >= r.x && x <= r.x + r.w && y >= r.y - 10 && y <= r.y + r.h + 10) return i;
+  }
+  return -1;
+}
+let pointerId = null;
+const lift = () => matchMedia('(pointer: coarse)').matches ? L.cell * 2.1 : L.cell * 0.6;
+cv.addEventListener('pointerdown', e => {
+  unlockAudio();
+  const i = pickAt(e.clientX, e.clientY);
+  if (i < 0) return;
+  pointerId = e.pointerId;
+  cv.setPointerCapture(e.pointerId);
+  const p = tray[i];
+  dragging = { i, px: e.clientX, py: e.clientY, tx: e.clientX, ty: e.clientY, target: null };
+  p.x = e.clientX; p.y = e.clientY;
+  sfx.pick();
+});
+cv.addEventListener('pointermove', e => {
+  if (!dragging || e.pointerId !== pointerId) return;
+  dragging.tx = e.clientX; dragging.ty = e.clientY;
+});
+const endDrag = e => {
+  if (!dragging || e.pointerId !== pointerId) return;
+  const p = tray[dragging.i];
+  if (dragging.target) place(p, dragging.target.r, dragging.target.c);
+  else sfx.back();
+  dragging = null; pointerId = null;
+};
+cv.addEventListener('pointerup', endDrag);
+cv.addEventListener('pointercancel', endDrag);
+
+// snap the dragged piece to the nearest cell it fits in
+function targetFor(p, cx, cy){
+  const s = p.shape;
+  const ox = cx - s.cols * L.cell / 2, oy = cy - s.rows * L.cell / 2;
+  const c = Math.round((ox - L.x) / L.cell), r = Math.round((oy - L.y) / L.cell);
+  if (fits(s, r, c)) return { r, c };
+  return null;
+}
+// which lines would clear if the piece went here
+function wouldClear(p, r, c){
+  const b = board.map(row => row.slice());
+  for (const [dr, dc] of p.shape.c) b[r + dr][c + dc] = { color: p.color };
+  const rows = [], cols = [];
+  for (let i = 0; i < N; i++){
+    if (b[i].every(Boolean)) rows.push(i);
+    if (b.every(row => row[i])) cols.push(i);
+  }
+  return { rows, cols };
+}
+
+/* ---------- drawing ---------- */
+function rr(x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+// a glossy block with a bevel
+function block(x, y, s, ci, alpha = 1, grey = 0){
+  const [c1, c2] = COLORS[ci];
+  const pad = s * 0.045, w = s - pad * 2, r = s * 0.2;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const g = ctx.createLinearGradient(x, y, x, y + s);
+  if (grey){
+    g.addColorStop(0, mix(c1, '#6b6890', grey)); g.addColorStop(1, mix(c2, '#4a4770', grey));
+  } else { g.addColorStop(0, c1); g.addColorStop(1, c2); }
+  rr(x + pad, y + pad, w, w, r);
+  ctx.fillStyle = g; ctx.fill();
+  // inner bevel
+  ctx.lineWidth = Math.max(1, s * 0.06);
+  ctx.strokeStyle = 'rgba(255,255,255,.35)';
+  rr(x + pad + ctx.lineWidth / 2, y + pad + ctx.lineWidth / 2, w - ctx.lineWidth, w - ctx.lineWidth, r * 0.85);
+  ctx.stroke();
+  // top shine
+  ctx.globalAlpha = alpha * 0.5;
+  rr(x + pad + s * 0.14, y + pad + s * 0.1, w - s * 0.28, s * 0.2, s * 0.1);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  // bottom shade
+  ctx.globalAlpha = alpha * 0.18;
+  rr(x + pad + s * 0.08, y + s - pad - s * 0.16, w - s * 0.16, s * 0.1, s * 0.05);
+  ctx.fillStyle = '#000'; ctx.fill();
+  ctx.restore();
+}
+function mix(a, b, t){
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = (p, s) => (p >> s) & 255;
+  const m = s => Math.round(ch(pa, s) + (ch(pb, s) - ch(pa, s)) * t);
+  return `rgb(${m(16)},${m(8)},${m(0)})`;
+}
+const easeOutBack = t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+
+function draw(now, dt){
+  ctx.clearRect(0, 0, VW, VH);
+  if (!board) return;
+  let sx = 0, sy = 0;
+  if (shake > 0.1){ sx = (Math.random() - 0.5) * shake; sy = (Math.random() - 0.5) * shake; shake *= Math.pow(0.002, dt); }
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  // board frame
+  const pad = L.cell * 0.16;
+  rr(L.x - pad, L.y - pad, L.size + pad * 2, L.size + pad * 2, L.cell * 0.32);
+  ctx.fillStyle = 'rgba(10,8,40,.55)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 2; ctx.stroke();
+  // empty cells
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+    const x = L.x + c * L.cell, y = L.y + r * L.cell;
+    rr(x + L.cell * 0.05, y + L.cell * 0.05, L.cell * 0.9, L.cell * 0.9, L.cell * 0.16);
+    ctx.fillStyle = 'rgba(255,255,255,.045)'; ctx.fill();
+  }
+
+  // drag preview
+  let preview = null, clearSet = null;
+  if (dragging){
+    const p = tray[dragging.i];
+    const k = 1 - Math.pow(0.0001, dt);
+    p.x += (dragging.tx - p.x) * Math.min(1, k * 1.6);
+    p.y += (dragging.ty - lift() - p.y) * Math.min(1, k * 1.6);
+    dragging.target = targetFor(p, p.x, p.y);
+    if (dragging.target){
+      preview = { p, ...dragging.target };
+      const w = wouldClear(p, dragging.target.r, dragging.target.c);
+      clearSet = w;
+    }
+  }
+  const lit = (r, c) => clearSet && (clearSet.rows.includes(r) || clearSet.cols.includes(c));
+
+  // placed blocks
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+    const cell = board[r][c]; if (!cell) continue;
+    const x = L.x + c * L.cell, y = L.y + r * L.cell;
+    const age = (now - cell.born) / 260;
+    const s = age < 0 ? 0 : age < 1 ? easeOutBack(Math.min(1, age)) : 1;
+    if (s <= 0) continue;
+    const grey = cell.dieAt ? Math.min(1, Math.max(0, (now - cell.dieAt) / 300)) * 0.85 : 0;
+    const size = L.cell * s;
+    const ci = lit(r, c) && preview ? preview.p.color : cell.color;
+    block(x + (L.cell - size) / 2, y + (L.cell - size) / 2, size, ci, 1, grey);
+    if (lit(r, c)){
+      rr(x + L.cell * 0.05, y + L.cell * 0.05, L.cell * 0.9, L.cell * 0.9, L.cell * 0.18);
+      ctx.fillStyle = `rgba(255,255,255,${0.18 + 0.12 * Math.sin(now / 90)})`; ctx.fill();
+    }
+  }
+  // ghost of where the piece will land
+  if (preview){
+    for (const [dr, dc] of preview.p.shape.c){
+      const x = L.x + (preview.c + dc) * L.cell, y = L.y + (preview.r + dr) * L.cell;
+      block(x, y, L.cell, preview.p.color, 0.42);
+    }
+  }
+
+  // clear effects
+  for (let i = effects.length - 1; i >= 0; i--){
+    const e = effects[i];
+    if (e.type !== 'clear') continue;
+    const t = (now - e.t0) / 380;
+    if (t < 0){
+      block(L.x + e.c * L.cell, L.y + e.r * L.cell, L.cell, e.color);
+      continue;
+    }
+    if (t >= 1){ effects.splice(i, 1); continue; }
+    if (!e.burst){
+      e.burst = true;
+      for (let k = 0; k < 7; k++){
+        const a = Math.random() * Math.PI * 2, v = 120 + Math.random() * 260;
+        particles.push({ x: L.x + (e.c + 0.5) * L.cell, y: L.y + (e.r + 0.5) * L.cell,
+          vx: Math.cos(a) * v, vy: Math.sin(a) * v - 120, life: 0, max: 0.5 + Math.random() * 0.5,
+          s: L.cell * (0.12 + Math.random() * 0.14), col: COLORS[e.color][Math.random() < 0.5 ? 0 : 1] });
+      }
+    }
+    const x = L.x + e.c * L.cell, y = L.y + e.r * L.cell;
+    const s = L.cell * (1 - t) * (1 + t * 0.4);
+    ctx.save();
+    ctx.translate(x + L.cell / 2, y + L.cell / 2);
+    ctx.rotate(t * 0.6);
+    block(-s / 2, -s / 2, s, e.color, 1 - t * 0.3);
+    ctx.globalAlpha = (1 - t) * 0.9;
+    rr(-s / 2, -s / 2, s, s, s * 0.2); ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.restore();
+  }
+
+  // particles
+  for (let i = particles.length - 1; i >= 0; i--){
+    const p = particles[i];
+    p.life += dt;
+    if (p.life > p.max){ particles.splice(i, 1); continue; }
+    p.vy += 900 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.985;
+    ctx.globalAlpha = 1 - p.life / p.max;
+    ctx.fillStyle = p.col;
+    rr(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s, p.s * 0.3); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // tray
+  for (let i = 0; i < 3; i++){
+    const p = tray[i];
+    p.appear = Math.min(1, p.appear + dt * 3.2);
+    const slot = trayRect(i);
+    const cx = slot.x + slot.w / 2, cy = slot.y + slot.h / 2;
+    if (p.used) continue;
+    if (p.x === null){ p.x = cx; p.y = cy; }
+    const isDrag = dragging && dragging.i === i;
+    const fitsSomewhere = canPlaceAnywhere(p.shape);
+    const targetScale = isDrag ? 1 : L.mini / L.cell;
+    p.scale += (targetScale - p.scale) * Math.min(1, dt * 16);
+    if (!isDrag){
+      const a = Math.max(0, p.appear);
+      const slide = (1 - easeOutBack(a)) * 60;
+      p.x += (cx - p.x) * Math.min(1, dt * 14);
+      p.y += (cy + slide - p.y) * Math.min(1, dt * 14);
+      if (a <= 0) continue;
+    }
+    const sz = L.cell * p.scale;
+    const ox = p.x - p.shape.cols * sz / 2, oy = p.y - p.shape.rows * sz / 2;
+    if (isDrag){
+      // drop shadow under the lifted piece
+      ctx.save(); ctx.globalAlpha = 0.25; ctx.fillStyle = '#000';
+      for (const [dr, dc] of p.shape.c){ rr(ox + dc * sz + 6, oy + dr * sz + 10, sz * 0.9, sz * 0.9, sz * 0.2); ctx.fill(); }
+      ctx.restore();
+    }
+    for (const [dr, dc] of p.shape.c) block(ox + dc * sz, oy + dr * sz, sz, p.color, fitsSomewhere ? 1 : 0.35, fitsSomewhere ? 0 : 0.7);
+  }
+
+  // floating score text and banners
+  for (let i = effects.length - 1; i >= 0; i--){
+    const e = effects[i];
+    if (e.type === 'text'){
+      const t = (now - e.t0) / 900;
+      if (t >= 1){ effects.splice(i, 1); continue; }
+      ctx.save();
+      ctx.globalAlpha = t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3;
+      ctx.font = `700 ${Math.round(L.cell * 0.62 * e.size * (1 + 0.25 * easeOutBack(Math.min(1, t * 4))))}px Fredoka, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(20,10,60,.6)';
+      ctx.strokeText(e.text, e.x, e.y - t * L.cell * 1.2);
+      ctx.fillStyle = '#fff'; ctx.fillText(e.text, e.x, e.y - t * L.cell * 1.2);
+      ctx.restore();
+    } else if (e.type === 'banner'){
+      const t = (now - e.t0) / 1300;
+      if (t < 0) continue;
+      if (t >= 1){ effects.splice(i, 1); continue; }
+      const sIn = easeOutBack(Math.min(1, t * 4.5));
+      ctx.save();
+      ctx.globalAlpha = t < 0.75 ? 1 : 1 - (t - 0.75) / 0.25;
+      ctx.translate(VW / 2, L.y + L.size * 0.42 - t * 20);
+      ctx.scale(sIn, sIn);
+      ctx.rotate(-0.04);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const fs = Math.round(Math.min(L.size * 0.15, 72));
+      ctx.font = `700 ${fs}px Fredoka, sans-serif`;
+      ctx.lineWidth = fs * 0.18; ctx.lineJoin = 'round'; ctx.strokeStyle = '#2a145e';
+      ctx.strokeText(e.text, 0, 0);
+      const g = ctx.createLinearGradient(0, -fs / 2, 0, fs / 2);
+      g.addColorStop(0, '#fff'); g.addColorStop(1, e.color);
+      ctx.fillStyle = g; ctx.fillText(e.text, 0, 0);
+      if (e.sub){
+        ctx.font = `700 ${Math.round(fs * 0.42)}px Fredoka, sans-serif`;
+        ctx.lineWidth = fs * 0.1; ctx.strokeText(e.sub, 0, fs * 0.72);
+        ctx.fillStyle = '#fff'; ctx.fillText(e.sub, 0, fs * 0.72);
+      }
+      ctx.restore();
+    }
+  }
+}
+
+/* ---------- loop ---------- */
+const scoreEl = document.getElementById('score');
+let last = performance.now();
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (board && shownScore !== score){
+    shownScore += Math.max(1, Math.ceil((score - shownScore) * Math.min(1, dt * 10)));
+    if (shownScore > score) shownScore = score;
+    scoreEl.textContent = shownScore;
+  }
+  draw(now, dt);
+}
+requestAnimationFrame(frame);
+
+/* ---------- sound (synthesized) ---------- */
+let AC = null;
+function unlockAudio(){
+  if (!AC){ try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (AC && AC.state === 'suspended') AC.resume();
+}
+function tone(f, dur, { type = 'sine', vol = 0.12, f2, when = 0 } = {}){
+  if (!sound || !AC) return;
+  const t = AC.currentTime + when, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t);
+  if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+const sfx = {
+  pick(){ tone(520, 0.06, { type: 'triangle', vol: 0.08 }); },
+  back(){ tone(300, 0.08, { type: 'triangle', vol: 0.06, f2: 220 }); },
+  place(){ tone(180, 0.09, { vol: 0.2, f2: 120 }); tone(660, 0.05, { type: 'triangle', vol: 0.05 }); },
+  deal(){ [0, 1, 2].forEach(i => tone(700 + i * 120, 0.06, { type: 'triangle', vol: 0.05, when: i * 0.06 })); },
+  clear(lines, combo){
+    const base = 440 * Math.pow(2, Math.min(combo - 1, 8) / 12 * 2);
+    [0, 4, 7, 12].slice(0, 2 + Math.min(2, lines)).forEach((s, i) =>
+      tone(base * Math.pow(2, s / 12), 0.22, { type: 'triangle', vol: 0.1, when: i * 0.06 }));
+  },
+  over(){ [392, 330, 262, 196].forEach((f, i) => tone(f, 0.3, { type: 'triangle', vol: 0.09, when: i * 0.14 })); }
+};
+const vibrate = p => { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) {} };
+
+/* ---------- UI ---------- */
+const showOv = id => document.getElementById(id).classList.add('on');
+const hideOv = id => document.getElementById(id).classList.remove('on');
+document.getElementById('startBest').textContent = best;
+document.getElementById('best').textContent = best;
+document.getElementById('bPlay').onclick = () => { unlockAudio(); start(); };
+document.getElementById('bAgain').onclick = () => { unlockAudio(); start(); };
+document.getElementById('bMenu').onclick = () => { if (running && score > 0 && !confirmRestart()) return; start(); };
+let restartArmed = 0;
+function confirmRestart(){
+  const now = Date.now();
+  if (now - restartArmed < 2000) return true;
+  restartArmed = now;
+  effects.push({ type: 'banner', text: 'Tap again', sub: 'to restart', t0: performance.now(), color: '#ff6b8b' });
+  return false;
+}
+function paintSound(){ document.getElementById('bSound').style.opacity = sound ? 1 : 0.45; }
+document.getElementById('bSound').onclick = () => {
+  sound = !sound; paintSound();
+  try { localStorage.setItem('bb_sound', sound ? '1' : '0'); } catch (e) {}
+  unlockAudio(); if (sound) sfx.pick();
+};
+paintSound();
+// show an empty board behind the start card
+board = Array.from({ length: N }, () => new Array(N).fill(null));
+newTray(); score = 0; shownScore = 0; effects = []; particles = []; shake = 0; running = false;
+</script>
+</body>
+</html>
