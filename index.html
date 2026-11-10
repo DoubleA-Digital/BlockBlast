@@ -17,6 +17,11 @@
     font-family:"Fredoka", system-ui, sans-serif; user-select:none; -webkit-user-select:none; touch-action:none; }
   body{ background: radial-gradient(120% 90% at 50% 0%, var(--bg1) 0%, #1b1550 45%, var(--bg2) 100%); }
   #cv{ position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+  #fire{ position:fixed; inset:0; pointer-events:none; opacity:0; transition:opacity .9s;
+    background: radial-gradient(90% 55% at 50% 105%, rgba(255,96,70,.42), transparent 70%),
+                radial-gradient(70% 40% at 50% -5%, rgba(255,70,130,.28), transparent 70%); }
+  #fire.on{ opacity:1; animation:fireGlow 1.6s ease-in-out infinite; }
+  @keyframes fireGlow{ 50%{ filter:brightness(1.35); } }
   .top{ position:fixed; left:0; right:0; top:calc(14px + env(safe-area-inset-top)); display:flex; justify-content:center;
     pointer-events:none; }
   .scorebox{ text-align:center; }
@@ -51,6 +56,7 @@
 </style>
 </head>
 <body>
+<div id="fire"></div>
 <canvas id="cv"></canvas>
 
 <div class="top"><div class="scorebox">
@@ -63,7 +69,7 @@
 
 <div class="ov on" id="start"><div class="card">
   <h2>Block Blast</h2>
-  <p class="how">Drag the three blocks onto the board. Fill a full row or column to blast it. Clear lines back to back for combos. It's over when nothing fits.</p>
+  <p class="how">Drag the three blocks onto the board. Fill a full row or column to blast it. Clear again within 3 moves to build a combo. Hit a 3× combo to light the heart, and keep clearing to keep it burning. It's over when nothing fits.</p>
   <div class="lbl">Best</div><div class="big" id="startBest">0</div>
   <button class="btn" id="bPlay">Play</button>
 </div></div>
@@ -72,6 +78,7 @@
   <h2 id="overTitle">No more moves</h2>
   <div class="lbl">Score</div><div class="big" id="overScore">0</div>
   <div id="overBest"></div>
+  <div class="how" id="overCombo"></div>
   <button class="btn" id="bAgain">Play again</button>
 </div></div>
 
@@ -114,10 +121,11 @@ const SHAPES = [
   const rows = Math.max(...s.c.map(p => p[0])) + 1, cols = Math.max(...s.c.map(p => p[1])) + 1;
   return { ...s, rows, cols };
 });
-const W_TOTAL = SHAPES.reduce((a, s) => a + s.w, 0);
 
 /* ---------- state ---------- */
-let board, tray, score, shownScore, best, combo, movesSinceClear, running, dragging, effects, particles, shake;
+let board, tray, score, shownScore, best, combo, maxCombo, movesSinceClear, running, dragging, effects, particles, shake, beatBest;
+// the streak heart: lights at a 3× combo, stays while you keep clearing within 3 moves
+let heart = { shown: false, t0: 0, pulseAt: 0, breakAt: 0 }, emberAcc = 0;
 try { best = +localStorage.getItem('bb_best') || 0; } catch (e) { best = 0; }
 let sound = true;
 try { sound = localStorage.getItem('bb_sound') !== '0'; } catch (e) {}
@@ -130,7 +138,7 @@ function layout(){
   VW = innerWidth; VH = innerHeight;
   cv.width = Math.round(VW * DPR); cv.height = Math.round(VH * DPR);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  const top = 130, trayH = Math.min(190, VH * 0.24);
+  const top = 142, trayH = Math.min(190, VH * 0.24);
   const size = Math.max(200, Math.min(VW - 28, VH - top - trayH - 30, 560));
   L.cell = size / N;
   L.size = size;
@@ -146,9 +154,14 @@ addEventListener('resize', layout);
 layout();
 
 /* ---------- pieces ---------- */
+// big pieces get more common as the score climbs, tiny ones less
+function weightOf(s){
+  const n = s.c.length, hard = Math.min(1.5, (score || 0) / 4000);
+  return s.w * (n >= 5 ? 1 + hard : n <= 2 ? Math.max(0.55, 1 - hard * 0.3) : 1);
+}
 function randShape(){
-  let r = Math.random() * W_TOTAL;
-  for (const s of SHAPES){ if ((r -= s.w) <= 0) return s; }
+  let r = Math.random() * SHAPES.reduce((a, s) => a + weightOf(s), 0);
+  for (const s of SHAPES){ if ((r -= weightOf(s)) <= 0) return s; }
   return SHAPES[0];
 }
 const fits = (s, r, c, b = board) => s.c.every(([dr, dc]) => {
@@ -159,28 +172,69 @@ const canPlaceAnywhere = (s, b = board) => {
   for (let r = 0; r <= N - s.rows; r++) for (let c = 0; c <= N - s.cols; c++) if (fits(s, r, c, b)) return true;
   return false;
 };
-function newTray(){
-  // try for a hand where at least one piece fits; keep it random otherwise
-  let hand;
-  for (let tries = 0; tries < 25; tries++){
-    hand = [randShape(), randShape(), randShape()];
-    if (hand.some(s => canPlaceAnywhere(s))) break;
+// place a piece on a copy of the board and clear any full lines
+function settle(b, s, r, c){
+  const nb = b.map(row => row.slice());
+  for (const [dr, dc] of s.c) nb[r + dr][c + dc] = 1;
+  const rows = [], cols = [];
+  for (let i = 0; i < N; i++){
+    if (nb[i].every(Boolean)) rows.push(i);
+    if (nb.every(row => row[i])) cols.push(i);
   }
-  tray = hand.map((s, i) => ({ shape: s, color: (Math.random() * COLORS.length) | 0, used: false,
+  rows.forEach(i => nb[i].fill(null));
+  cols.forEach(i => { for (let k = 0; k < N; k++) nb[k][i] = null; });
+  return { b: nb, lines: rows.length + cols.length };
+}
+// can all of these pieces be placed in some order? gives up (and says yes) once the budget runs out
+let budget = 0;
+function solvable(b, shapes){
+  if (!shapes.length) return true;
+  for (let i = 0; i < shapes.length; i++){
+    const s = shapes[i], rest = shapes.filter((_, k) => k !== i);
+    for (let r = 0; r <= N - s.rows; r++) for (let c = 0; c <= N - s.cols; c++){
+      if (--budget < 0) return true;
+      if (!fits(s, r, c, b)) continue;
+      if (!rest.length || solvable(settle(b, s, r, c).b, rest)) return true;
+    }
+  }
+  return false;
+}
+const canClear = s => {
+  for (let r = 0; r <= N - s.rows; r++) for (let c = 0; c <= N - s.cols; c++)
+    if (fits(s, r, c) && settle(board, s, r, c).lines) return true;
+  return false;
+};
+function newTray(){
+  // deal a fair hand: all three pieces should fit in some order, and early on
+  // the dealer often slips in a piece that finishes a line
+  const helpful = Math.random() < Math.max(0.25, 0.6 - score / 30000);
+  let pick = null, pickScore = -1;
+  for (let tries = 0; tries < 30 && pickScore < 3; tries++){
+    const hand = [randShape(), randShape(), randShape()];
+    let sc = 0;
+    if (hand.some(s => canPlaceAnywhere(s))){
+      sc = 1; budget = 6000;
+      if (solvable(board, hand)) sc = helpful && !hand.some(canClear) ? 2 : 3;
+    }
+    if (sc > pickScore){ pick = hand; pickScore = sc; }
+  }
+  tray = pick.map((s, i) => ({ shape: s, color: (Math.random() * COLORS.length) | 0, used: false,
                                 appear: -i * 0.08, x: null, y: null, scale: 0 }));
 }
 
 /* ---------- game flow ---------- */
 function start(){
   board = Array.from({ length: N }, () => new Array(N).fill(null));
-  score = 0; shownScore = 0; combo = 0; movesSinceClear = 0; running = true; dragging = null;
-  effects = []; particles = []; shake = 0;
+  score = 0; shownScore = 0; combo = 0; maxCombo = 0; movesSinceClear = 0; running = true; dragging = null;
+  effects = []; particles = []; shake = 0; beatBest = best === 0;
+  heart = { shown: false, t0: 0, pulseAt: 0, breakAt: 0 }; setFire(false);
   newTray();
   hideOv('over'); hideOv('start');
   updateScore();
 }
 function gameOver(){
   running = false;
+  if (heart.shown) breakHeart(performance.now());
   const isBest = score > best;
   if (isBest){ best = score; try { localStorage.setItem('bb_best', best); } catch (e) {} }
   // grey out the board row by row
@@ -191,12 +245,29 @@ function gameOver(){
     document.getElementById('overScore').textContent = score;
     document.getElementById('overBest').innerHTML = isBest && score > 0
       ? '<span class="nb">New best!</span>' : `<div class="lbl">Best</div><div class="big" style="font-size:30px">${best}</div>`;
-    document.getElementById('overTitle').textContent = isBest && score > 0 ? 'Amazing!' : 'No more moves';
+    document.getElementById('overTitle').textContent = isBest && score > 0 ? 'Amazing!' : 'No more space';
+    document.getElementById('overCombo').textContent = maxCombo >= 2 ? `Best combo this game: ×${maxCombo}` : '';
     showOv('over');
   }, 1100);
   updateScore();
 }
 function updateScore(){ document.getElementById('best').textContent = Math.max(best, score); }
+const setFire = on => document.getElementById('fire').classList.toggle('on', on);
+function lightHeart(now){
+  heart = { shown: true, t0: now, pulseAt: now, breakAt: 0 };
+  setFire(true); sfx.heartOn(); vibrate([15, 40, 25]);
+  for (let k = 0; k < 18; k++){
+    const a = Math.random() * Math.PI * 2, v = 80 + Math.random() * 180;
+    particles.push({ x: heartPos().x, y: heartPos().y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, g: 200,
+      life: 0, max: 0.5 + Math.random() * 0.4, s: 3 + Math.random() * 4, col: Math.random() < 0.5 ? '#ff5a82' : '#ffc94a' });
+  }
+}
+function breakHeart(now){
+  heart.shown = false; heart.breakAt = now;
+  setFire(false); sfx.heartBreak();
+  const h = heartPos();
+  effects.push({ type: 'text', x: h.x + 64, y: h.y, text: 'Streak lost', t0: now, size: 0.5 });
+}
 
 function place(piece, r, c){
   const now = performance.now();
@@ -215,7 +286,14 @@ function place(piece, r, c){
   const lines = rows.length + cols.length;
   if (lines){
     combo = movesSinceClear <= 2 && combo > 0 ? combo + 1 : 1;
+    maxCombo = Math.max(maxCombo, combo);
     movesSinceClear = 0;
+    const firstHeart = combo >= 3 && !heart.shown;
+    if (firstHeart) lightHeart(now);
+    else if (heart.shown){ heart.pulseAt = now; sfx.heartOn(true); }
+    const beamColor = COLORS[piece.color][0];
+    rows.forEach(i => effects.push({ type: 'beam', row: i, t0: now, color: beamColor }));
+    cols.forEach(i => effects.push({ type: 'beam', col: i, t0: now, color: beamColor }));
     const cells = new Map();
     rows.forEach(rr => { for (let cc = 0; cc < N; cc++) cells.set(rr * N + cc, [rr, cc]); });
     cols.forEach(cc => { for (let rr = 0; rr < N; rr++) cells.set(rr * N + cc, [rr, cc]); });
@@ -229,26 +307,36 @@ function place(piece, r, c){
       i++;
     }
     const lineScore = 10 * lines * lines + (lines > 1 ? 20 * lines : 0);
-    gained += Math.round(lineScore * (1 + (combo - 1) * 0.5));
+    // every combo step multiplies the line score
+    gained += Math.round(lineScore * combo);
     const allClear = board.every(row => row.every(x => !x));
     if (allClear) gained += 300;
-    shake = Math.min(14, 4 + lines * 3 + combo);
+    shake = Math.min(16, 4 + lines * 3 + combo);
     const cx = L.x + (c + s.cols / 2) * L.cell, cy = L.y + (r + s.rows / 2) * L.cell;
-    const words = ['', 'Nice', 'Great!', 'Excellent!', 'Amazing!', 'Unbelievable!'];
+    const words = ['', 'Good!', 'Great!', 'Excellent!', 'Amazing!', 'Unbelievable!'];
     effects.push({ type: 'text', x: cx, y: cy - L.cell * 0.4, text: '+' + gained, t0: now, size: 1 });
+    if (combo >= 2)
+      effects.push({ type: 'text', x: cx, y: cy + L.cell * 0.35, text: `Combo ${combo}`, t0: now + 80, size: 0.6, color: beamColor });
     if (lines >= 2 || combo >= 2)
       effects.push({ type: 'banner', text: combo >= 2 ? `Combo ×${combo}` : words[Math.min(5, lines)],
-                     sub: combo >= 2 ? words[Math.min(5, lines)] : '', t0: now, color: COLORS[piece.color][0] });
+                     sub: firstHeart ? 'Streak lit! Keep clearing' : combo >= 2 ? words[Math.min(5, lines)] : '',
+                     t0: now, color: beamColor });
     if (allClear) effects.push({ type: 'banner', text: 'All Clear!', sub: '+300', t0: now + 500, color: '#ffc94a' });
     sfx.clear(lines, combo);
     vibrate(lines > 1 ? [20, 30, 30] : 18);
   } else {
     movesSinceClear++;
-    if (movesSinceClear > 2) combo = 0;
+    if (movesSinceClear > 2){ if (heart.shown) breakHeart(now); combo = 0; }
+    else if (heart.shown) sfx.thump(movesSinceClear === 2);
     effects.push({ type: 'text', x: L.x + (c + s.cols / 2) * L.cell, y: L.y + r * L.cell, text: '+' + gained, t0: now, size: 0.7 });
   }
   score += gained;
   updateScore();
+  if (gained > s.c.length) scoreEl.animate([{ transform: 'scale(1.18)' }, { transform: 'scale(1)' }], { duration: 280, easing: 'ease-out' });
+  if (!beatBest && score > best){
+    beatBest = true;
+    effects.push({ type: 'banner', text: 'New Best!', sub: '', t0: now + 900, color: '#ffc94a' });
+  }
 
   if (tray.every(p => p.used)){ newTray(); sfx.deal(); }
   // over when no remaining piece fits
@@ -300,9 +388,14 @@ cv.addEventListener('pointercancel', endDrag);
 function targetFor(p, cx, cy){
   const s = p.shape;
   const ox = cx - s.cols * L.cell / 2, oy = cy - s.rows * L.cell / 2;
-  const c = Math.round((ox - L.x) / L.cell), r = Math.round((oy - L.y) / L.cell);
-  if (fits(s, r, c)) return { r, c };
-  return null;
+  // nearest cell that fits, so a slightly-off drop next to a blocked spot still lands
+  const fc = (ox - L.x) / L.cell, fr = (oy - L.y) / L.cell;
+  let best = null, bd = 0.9;
+  for (const r of [Math.floor(fr), Math.ceil(fr)]) for (const c of [Math.floor(fc), Math.ceil(fc)]){
+    const d = Math.hypot(fr - r, fc - c);
+    if (d < bd && fits(s, r, c)){ bd = d; best = { r, c }; }
+  }
+  return best;
 }
 // which lines would clear if the piece went here
 function wouldClear(p, r, c){
@@ -355,6 +448,73 @@ function mix(a, b, t){
   const m = s => Math.round(ch(pa, s) + (ch(pb, s) - ch(pa, s)) * t);
   return `rgb(${m(16)},${m(8)},${m(0)})`;
 }
+const heartPos = () => ({ x: L.x + 26, y: L.y - L.cell * 0.16 - 40 });
+function heartPath(){
+  ctx.beginPath();
+  ctx.moveTo(0, 0.9);
+  ctx.bezierCurveTo(-0.3, 0.62, -1, 0.25, -1, -0.25);
+  ctx.bezierCurveTo(-1, -0.78, -0.42, -1.02, 0, -0.55);
+  ctx.bezierCurveTo(0.42, -1.02, 1, -0.78, 1, -0.25);
+  ctx.bezierCurveTo(1, 0.25, 0.3, 0.62, 0, 0.9);
+  ctx.closePath();
+}
+const CRACK = [[0, -1.4], [0, -0.55], [0.14, -0.22], [-0.12, 0.12], [0.1, 0.48], [0, 1.4]];
+function drawHeart(now){
+  const { x: hx, y: hy } = heartPos(), s = 18;
+  if (heart.shown){
+    const warn = movesSinceClear >= 2;                 // one move left to keep it
+    const period = warn ? 430 : 900;
+    const ph = ((now - heart.t0) % period) / period;
+    const bump = c => Math.exp(-Math.pow((ph - c) / 0.05, 2));
+    const beat = bump(0.1) + 0.6 * bump(0.3);          // lub-dub
+    const pop = easeOutBack(Math.min(1, (now - heart.t0) / 380));
+    const kick = 0.5 * Math.exp(-(now - heart.pulseAt) / 170);
+    const flash = warn ? (Math.sin(now / 65) > 0 ? 1 : 0) : 0.5 + 0.5 * Math.sin(now / 150);
+    const sc = s * pop * (1 + 0.16 * beat + kick);
+    ctx.save();
+    ctx.translate(hx, hy); ctx.scale(sc, sc);
+    ctx.shadowColor = warn ? '#ffffff' : '#ff3d6e'; ctx.shadowBlur = 10 + 22 * flash;
+    heartPath();
+    const g = ctx.createLinearGradient(0, -1, 0, 1);
+    g.addColorStop(0, warn && flash ? '#ffe1e8' : mix('#ff7a9a', '#ffc2d1', flash * 0.6));
+    g.addColorStop(1, warn && flash ? '#ff7a9a' : '#e3164a');
+    ctx.fillStyle = g; ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 0.1; ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(-0.46, -0.38, 0.24, 0.13, -0.6, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,.65)'; ctx.fill();
+    ctx.restore();
+    // combo count inside the heart
+    ctx.save();
+    ctx.font = `700 ${Math.round(s * 0.95 * pop)}px Fredoka, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 4; ctx.lineJoin = 'round'; ctx.strokeStyle = '#8a0f33';
+    ctx.strokeText(combo, hx, hy + 1); ctx.fillStyle = '#fff'; ctx.fillText(combo, hx, hy + 1);
+    // moves left to keep the streak
+    for (let i = 0; i < 3; i++){
+      const on = i < 3 - movesSinceClear;
+      ctx.beginPath(); ctx.arc(hx - 12 + i * 12, hy + s + 9, 3.6, 0, Math.PI * 2);
+      ctx.fillStyle = on ? (warn && flash ? '#fff' : '#ff7a9a') : 'rgba(255,255,255,.16)'; ctx.fill();
+    }
+    ctx.restore();
+  } else if (heart.breakAt && now - heart.breakAt < 850){
+    // crack in two and fall away
+    const t = (now - heart.breakAt) / 850;
+    for (const side of [-1, 1]){
+      ctx.save();
+      ctx.translate(hx + side * t * 26, hy + t * t * 60);
+      ctx.rotate(side * t * 0.9);
+      ctx.globalAlpha = 1 - t;
+      ctx.scale(s, s);
+      ctx.beginPath();
+      ctx.moveTo(side * 1.5, -1.4);
+      for (const [px, py] of CRACK) ctx.lineTo(px, py);
+      ctx.lineTo(side * 1.5, 1.4); ctx.closePath(); ctx.clip();
+      heartPath(); ctx.fillStyle = mix('#e3164a', '#5a5478', t); ctx.fill();
+      ctx.restore();
+    }
+  }
+}
 const easeOutBack = t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
 
 function draw(now, dt){
@@ -370,6 +530,18 @@ function draw(now, dt){
   rr(L.x - pad, L.y - pad, L.size + pad * 2, L.size + pad * 2, L.cell * 0.32);
   ctx.fillStyle = 'rgba(10,8,40,.55)'; ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 2; ctx.stroke();
+  if (heart.shown){
+    // the board edge burns while the streak is alive
+    ctx.save();
+    ctx.shadowColor = '#ff4d6d'; ctx.shadowBlur = 18 + 10 * Math.sin(now / 200);
+    ctx.strokeStyle = `rgba(255,120,150,${0.55 + 0.25 * Math.sin(now / 200)})`; ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.restore();
+    for (emberAcc += dt * 22; emberAcc >= 1; emberAcc--)
+      particles.push({ x: L.x + Math.random() * L.size, y: L.y + L.size + pad, vx: (Math.random() - 0.5) * 30,
+        vy: -40 - Math.random() * 70, g: -40, life: 0, max: 1 + Math.random() * 1.2, s: 2 + Math.random() * 3,
+        col: Math.random() < 0.6 ? '#ffb347' : '#ff6b8b' });
+  }
   // empty cells
   for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
     const x = L.x + c * L.cell, y = L.y + r * L.cell;
@@ -447,12 +619,29 @@ function draw(now, dt){
     ctx.restore();
   }
 
+  // light beams along cleared lines
+  for (let i = effects.length - 1; i >= 0; i--){
+    const e = effects[i];
+    if (e.type !== 'beam') continue;
+    const t = (now - e.t0) / 420;
+    if (t >= 1){ effects.splice(i, 1); continue; }
+    const thick = L.cell * (0.4 + 0.9 * (1 - t)), len = L.size + pad * 2;
+    ctx.save();
+    ctx.globalAlpha = (1 - t) * 0.85;
+    ctx.shadowColor = e.color; ctx.shadowBlur = 24;
+    ctx.fillStyle = '#fff';
+    if (e.row !== undefined) rr(L.x - pad, L.y + (e.row + 0.5) * L.cell - thick / 2, len, thick, thick / 2);
+    else rr(L.x + (e.col + 0.5) * L.cell - thick / 2, L.y - pad, thick, len, thick / 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   // particles
   for (let i = particles.length - 1; i >= 0; i--){
     const p = particles[i];
     p.life += dt;
     if (p.life > p.max){ particles.splice(i, 1); continue; }
-    p.vy += 900 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.985;
+    p.vy += (p.g ?? 900) * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.985;
     ctx.globalAlpha = 1 - p.life / p.max;
     ctx.fillStyle = p.col;
     rr(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s, p.s * 0.3); ctx.fill();
@@ -490,11 +679,16 @@ function draw(now, dt){
     for (const [dr, dc] of p.shape.c) block(ox + dc * sz, oy + dr * sz, sz, p.color, fitsSomewhere ? 1 : 0.35, fitsSomewhere ? 0 : 0.7);
   }
 
-  // floating score text and banners
+  drawHeart(now);
+
+  // floating score text and banners; banners showing at once stack downward
+  let stack = 0;
+  const banners = effects.filter(e => e.type === 'banner' && now >= e.t0).sort((a, b) => a.t0 - b.t0);
   for (let i = effects.length - 1; i >= 0; i--){
     const e = effects[i];
     if (e.type === 'text'){
       const t = (now - e.t0) / 900;
+      if (t < 0) continue;
       if (t >= 1){ effects.splice(i, 1); continue; }
       ctx.save();
       ctx.globalAlpha = t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3;
@@ -502,7 +696,7 @@ function draw(now, dt){
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(20,10,60,.6)';
       ctx.strokeText(e.text, e.x, e.y - t * L.cell * 1.2);
-      ctx.fillStyle = '#fff'; ctx.fillText(e.text, e.x, e.y - t * L.cell * 1.2);
+      ctx.fillStyle = e.color || '#fff'; ctx.fillText(e.text, e.x, e.y - t * L.cell * 1.2);
       ctx.restore();
     } else if (e.type === 'banner'){
       const t = (now - e.t0) / 1300;
@@ -511,11 +705,12 @@ function draw(now, dt){
       const sIn = easeOutBack(Math.min(1, t * 4.5));
       ctx.save();
       ctx.globalAlpha = t < 0.75 ? 1 : 1 - (t - 0.75) / 0.25;
-      ctx.translate(VW / 2, L.y + L.size * 0.42 - t * 20);
+      const fs = Math.round(Math.min(L.size * 0.15, 72));
+      stack = banners.indexOf(e);
+      ctx.translate(VW / 2, L.y + L.size * 0.42 - t * 20 + stack * fs * 1.5);
       ctx.scale(sIn, sIn);
       ctx.rotate(-0.04);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      const fs = Math.round(Math.min(L.size * 0.15, 72));
       ctx.font = `700 ${fs}px Fredoka, sans-serif`;
       ctx.lineWidth = fs * 0.18; ctx.lineJoin = 'round'; ctx.strokeStyle = '#2a145e';
       ctx.strokeText(e.text, 0, 0);
@@ -573,6 +768,12 @@ const sfx = {
     [0, 4, 7, 12].slice(0, 2 + Math.min(2, lines)).forEach((s, i) =>
       tone(base * Math.pow(2, s / 12), 0.22, { type: 'triangle', vol: 0.1, when: i * 0.06 }));
   },
+  heartOn(soft){
+    (soft ? [12, 16] : [0, 4, 7, 12, 16]).forEach((s, i) =>
+      tone(523 * Math.pow(2, s / 12), 0.18, { type: 'triangle', vol: soft ? 0.06 : 0.09, when: 0.12 + i * 0.05 }));
+  },
+  heartBreak(){ tone(520, 0.4, { type: 'sawtooth', vol: 0.04, f2: 110 }); tone(260, 0.32, { type: 'triangle', vol: 0.08, f2: 90, when: 0.06 }); },
+  thump(urgent){ tone(85, 0.12, { vol: urgent ? 0.3 : 0.18, f2: 48 }); tone(85, 0.12, { vol: urgent ? 0.22 : 0.12, f2: 48, when: 0.17 }); },
   over(){ [392, 330, 262, 196].forEach((f, i) => tone(f, 0.3, { type: 'triangle', vol: 0.09, when: i * 0.14 })); }
 };
 const vibrate = p => { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) {} };
@@ -602,7 +803,8 @@ document.getElementById('bSound').onclick = () => {
 paintSound();
 // show an empty board behind the start card
 board = Array.from({ length: N }, () => new Array(N).fill(null));
-newTray(); score = 0; shownScore = 0; effects = []; particles = []; shake = 0; running = false;
+score = 0; shownScore = 0; combo = 0; movesSinceClear = 0; effects = []; particles = []; shake = 0; running = false;
+newTray();
 </script>
 </body>
 </html>
